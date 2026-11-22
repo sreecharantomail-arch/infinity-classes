@@ -30,6 +30,9 @@ if (!process.env.JWT_SECRET) {
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Trust reverse proxy for Render / Cloudflare (ensures accurate req.ip for rate limiting)
+app.set('trust proxy', 1);
+
 // Connect to MongoDB & Seed initial data if empty
 connectDB().then((connected) => {
   if (connected) {

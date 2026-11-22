@@ -6,7 +6,6 @@ const examSessionSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
-      index: true,
     },
     questionIds: [
       {
@@ -31,6 +30,10 @@ const examSessionSchema = new mongoose.Schema(
       default: 'in_progress',
       index: true,
     },
+    submittingAt: {
+      type: Date,
+      default: null,
+    },
     attemptId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Attempt',
@@ -46,8 +49,16 @@ const examSessionSchema = new mongoose.Schema(
   }
 );
 
-// Compound index for fast lookup of a user's active session
-examSessionSchema.index({ userId: 1, status: 1 });
+// Unique partial index: strictly at most ONE 'in_progress' session per student at the database level!
+// Explicitly named to avoid index conflict with any existing standard index.
+examSessionSchema.index(
+  { userId: 1 },
+  {
+    name: 'unique_active_user_session',
+    unique: true,
+    partialFilterExpression: { status: 'in_progress' },
+  }
+);
 
 const ExamSession = mongoose.model('ExamSession', examSessionSchema);
 export default ExamSession;

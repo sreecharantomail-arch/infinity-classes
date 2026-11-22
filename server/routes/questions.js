@@ -15,14 +15,44 @@ const ensureQuestionsExist = async () => {
   }
 };
 
+// Helper to fetch and sanitize questions for a session
+const getSanitizedSessionQuestions = async (questionIds) => {
+  const questions = await Question.find({ _id: { $in: questionIds } });
+  const questionMap = new Map();
+  questions.forEach((q) => questionMap.set(q._id.toString(), q));
+
+  return questionIds
+    .map((id) => questionMap.get(id.toString()))
+    .filter(Boolean)
+    .map((q) => ({
+      _id: q._id,
+      questionText: q.questionText,
+      options: q.options,
+      category: q.category,
+      difficulty: q.difficulty,
+    }));
+};
+
 // @route   POST /api/questions/start-session
-// @desc    Start or resume a server-side 10-minute examination session
+// @desc    Start or resume a server-side 10-minute examination session (with atomic concurrency protection)
 // @access  Protected (Student/Admin)
 router.post('/start-session', verifyToken, async (req, res) => {
   try {
     await ensureQuestionsExist();
 
     const now = Date.now();
+
+    // 0. Automatically mark any past in-progress sessions for this user that have exceeded their deadline as 'expired'
+    await ExamSession.updateMany(
+      {
+        userId: req.user._id,
+        status: 'in_progress',
+        expiresAt: { $lte: new Date(now) },
+      },
+      {
+        $set: { status: 'expired' },
+      }
+    );
 
     // 1. Check if the user already has an active, unexpired session in progress
     const existingSession = await ExamSession.findOne({
@@ -32,25 +62,7 @@ router.post('/start-session', verifyToken, async (req, res) => {
     });
 
     if (existingSession) {
-      // Fetch the exact 10 questions assigned to this active session
-      const questions = await Question.find({
-        _id: { $in: existingSession.questionIds },
-      });
-
-      // Maintain the order of questionIds
-      const questionMap = new Map();
-      questions.forEach((q) => questionMap.set(q._id.toString(), q));
-      const orderedQuestions = existingSession.questionIds
-        .map((id) => questionMap.get(id.toString()))
-        .filter(Boolean);
-
-      const sanitizedQuestions = orderedQuestions.map((q) => ({
-        _id: q._id,
-        questionText: q.questionText,
-        options: q.options,
-        category: q.category,
-        difficulty: q.difficulty,
-      }));
+      const sanitizedQuestions = await getSanitizedSessionQuestions(existingSession.questionIds);
 
       return res.status(200).json({
         success: true,
@@ -63,7 +75,7 @@ router.post('/start-session', verifyToken, async (req, res) => {
       });
     }
 
-    // 2. No active session exists: sample 10 random questions from MongoDB
+    // 2. Sample 10 random questions from MongoDB
     let questions = await Question.aggregate([{ $sample: { size: 10 } }]);
     if (questions.length < 10) {
       questions = await Question.find().limit(10);
@@ -71,16 +83,43 @@ router.post('/start-session', verifyToken, async (req, res) => {
 
     const questionIds = questions.map((q) => q._id);
     const startedAt = new Date(now);
-    const expiresAt = new Date(now + 10 * 60 * 1000); // exactly 10 minutes
+    const expiresAt = new Date(now + 10 * 60 * 1000); // 10 minutes
 
-    // Create persistent ExamSession
-    const newSession = await ExamSession.create({
-      userId: req.user._id,
-      questionIds,
-      startedAt,
-      expiresAt,
-      status: 'in_progress',
-    });
+    // 3. Atomic creation protected by MongoDB Unique Partial Index on { userId: 1, status: 'in_progress' }
+    let newSession;
+    try {
+      newSession = await ExamSession.create({
+        userId: req.user._id,
+        questionIds,
+        startedAt,
+        expiresAt,
+        status: 'in_progress',
+      });
+    } catch (createErr) {
+      // Gracefully handle concurrent creation race condition (MongoDB E11000 duplicate key error)
+      if (createErr.code === 11000) {
+        const concurrentSession = await ExamSession.findOne({
+          userId: req.user._id,
+          status: 'in_progress',
+        });
+
+        if (concurrentSession) {
+          const sanitizedQuestions = await getSanitizedSessionQuestions(
+            concurrentSession.questionIds
+          );
+          return res.status(200).json({
+            success: true,
+            message: 'Concurrent session synchronized.',
+            sessionId: concurrentSession._id,
+            startedAt: concurrentSession.startedAt,
+            expiresAt: concurrentSession.expiresAt,
+            durationSeconds: 600,
+            questions: sanitizedQuestions,
+          });
+        }
+      }
+      throw createErr;
+    }
 
     const sanitizedQuestions = questions.map((q) => ({
       _id: q._id,
@@ -115,8 +154,20 @@ router.get('/test', verifyToken, async (req, res) => {
   try {
     await ensureQuestionsExist();
 
-    // Delegate to start-session logic
     const now = Date.now();
+
+    // Automatically transition expired sessions
+    await ExamSession.updateMany(
+      {
+        userId: req.user._id,
+        status: 'in_progress',
+        expiresAt: { $lte: new Date(now) },
+      },
+      {
+        $set: { status: 'expired' },
+      }
+    );
+
     const existingSession = await ExamSession.findOne({
       userId: req.user._id,
       status: 'in_progress',
@@ -124,22 +175,7 @@ router.get('/test', verifyToken, async (req, res) => {
     });
 
     if (existingSession) {
-      const questions = await Question.find({
-        _id: { $in: existingSession.questionIds },
-      });
-      const questionMap = new Map();
-      questions.forEach((q) => questionMap.set(q._id.toString(), q));
-      const orderedQuestions = existingSession.questionIds
-        .map((id) => questionMap.get(id.toString()))
-        .filter(Boolean);
-
-      const sanitizedQuestions = orderedQuestions.map((q) => ({
-        _id: q._id,
-        questionText: q.questionText,
-        options: q.options,
-        category: q.category,
-        difficulty: q.difficulty,
-      }));
+      const sanitizedQuestions = await getSanitizedSessionQuestions(existingSession.questionIds);
 
       return res.status(200).json({
         success: true,
@@ -160,27 +196,33 @@ router.get('/test', verifyToken, async (req, res) => {
     const startedAt = new Date(now);
     const expiresAt = new Date(now + 10 * 60 * 1000);
 
-    const newSession = await ExamSession.create({
-      userId: req.user._id,
-      questionIds,
-      startedAt,
-      expiresAt,
-      status: 'in_progress',
-    });
+    let session;
+    try {
+      session = await ExamSession.create({
+        userId: req.user._id,
+        questionIds,
+        startedAt,
+        expiresAt,
+        status: 'in_progress',
+      });
+    } catch (err) {
+      if (err.code === 11000) {
+        session = await ExamSession.findOne({
+          userId: req.user._id,
+          status: 'in_progress',
+        });
+      } else {
+        throw err;
+      }
+    }
 
-    const sanitizedQuestions = questions.map((q) => ({
-      _id: q._id,
-      questionText: q.questionText,
-      options: q.options,
-      category: q.category,
-      difficulty: q.difficulty,
-    }));
+    const sanitizedQuestions = await getSanitizedSessionQuestions(session.questionIds);
 
     res.status(200).json({
       success: true,
-      sessionId: newSession._id,
-      startedAt: newSession.startedAt,
-      expiresAt: newSession.expiresAt,
+      sessionId: session._id,
+      startedAt: session.startedAt,
+      expiresAt: session.expiresAt,
       count: sanitizedQuestions.length,
       questions: sanitizedQuestions,
     });
