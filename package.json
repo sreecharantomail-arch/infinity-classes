@@ -3,14 +3,14 @@
   "version": "1.0.0",
   "description": "Full-stack MERN Mini Online Test Application with Timer, History, Results, and Admin Panel",
   "scripts": {
-    "install-all": "npm install && cd server && npm install && cd ../client && npm install",
-    "dev": "concurrently \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "postinstall": "npm install --prefix server && npm install --prefix client",
+    "build": "npm install --prefix server && npm install --prefix client && npm run build --prefix client",
     "start": "node server/server.js",
-    "build": "cd client && npm run build",
-    "seed": "cd server && npm run seed"
+    "install-all": "npm install && npm install --prefix server && npm install --prefix client",
+    "dev": "concurrently \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "seed": "node server/seed/seedQuestions.js"
   },
-  "devDependencies": {
+  "dependencies": {
     "concurrently": "^8.2.2"
   }
 }
-
