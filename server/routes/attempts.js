@@ -35,6 +35,24 @@ router.post('/submit', verifyToken, async (req, res) => {
     // 1. Check if an Attempt ALREADY exists for this session (Idempotent Recovery)
     const existingAttempt = await Attempt.findOne({ sessionId });
     if (existingAttempt) {
+      // Security: Verify that the attempt belongs to the authenticated student (or admin)
+      if (
+        existingAttempt.userId.toString() !== req.user._id.toString() &&
+        req.user.role !== 'admin'
+      ) {
+        return res.status(403).json({
+          success: false,
+          message: 'Unauthorized: Examination attempt belongs to a different student.',
+        });
+      }
+
+      // Synchronize ExamSession if it remained in 'in_progress' or 'submitting'
+      await ExamSession.findByIdAndUpdate(sessionId, {
+        status: existingAttempt.status || 'completed',
+        attemptId: existingAttempt._id,
+        submittedAt: existingAttempt.createdAt || new Date(),
+      }).catch(() => {});
+
       return res.status(200).json({
         success: true,
         message: 'Test session was already submitted successfully.',

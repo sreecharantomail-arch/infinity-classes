@@ -35,3 +35,4 @@ const loginRateLimitSchema = new mongoose.Schema(
 
 const LoginRateLimit = mongoose.model('LoginRateLimit', loginRateLimitSchema);
 export default LoginRateLimit;
+

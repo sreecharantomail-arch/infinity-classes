@@ -42,17 +42,32 @@ router.post('/start-session', verifyToken, async (req, res) => {
 
     const now = Date.now();
 
-    // 0. Automatically mark any past in-progress sessions for this user that have exceeded their deadline as 'expired'
+    // 0. Automatically mark any past in-progress or submitting sessions for this user that have exceeded their deadline as 'expired'
     await ExamSession.updateMany(
       {
         userId: req.user._id,
-        status: 'in_progress',
+        status: { $in: ['in_progress', 'submitting'] },
         expiresAt: { $lte: new Date(now) },
       },
       {
         $set: { status: 'expired' },
       }
     );
+
+    // If a session is actively in 'submitting' state within its active window, protect it against concurrent test starts
+    const inFlightSession = await ExamSession.findOne({
+      userId: req.user._id,
+      status: 'submitting',
+      expiresAt: { $gt: new Date(now) },
+      submittingAt: { $gte: new Date(now - 30000) },
+    });
+
+    if (inFlightSession) {
+      return res.status(409).json({
+        success: false,
+        message: 'A previous test submission is currently being processed. Please wait a moment.',
+      });
+    }
 
     // 1. Check if the user already has an active, unexpired session in progress
     const existingSession = await ExamSession.findOne({
@@ -160,7 +175,7 @@ router.get('/test', verifyToken, async (req, res) => {
     await ExamSession.updateMany(
       {
         userId: req.user._id,
-        status: 'in_progress',
+        status: { $in: ['in_progress', 'submitting'] },
         expiresAt: { $lte: new Date(now) },
       },
       {
