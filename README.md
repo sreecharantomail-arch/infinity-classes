@@ -7,7 +7,7 @@
 ## 🌟 Live Demo & Repository
 
 - **Live Application Link**: [https://infinity-classes-online-test-app.onrender.com](https://infinity-classes-online-test-app.onrender.com) *(or your deployed Render/Vercel URL)*
-- **GitHub Repository**: [https://github.com/YOUR_GITHUB_USERNAME/infinity-classes-online-test-app](https://github.com/YOUR_GITHUB_USERNAME/infinity-classes-online-test-app)
+- **GitHub Repository**: [https://github.com/sreecharantomail-arch/infinity-classes](https://github.com/sreecharantomail-arch/infinity-classes)
 
 ---
 
@@ -104,8 +104,8 @@ infinity classess/
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/infinity-classes-online-test-app.git
-cd infinity-classes-online-test-app
+git clone https://github.com/sreecharantomail-arch/infinity-classes.git
+cd infinity-classes
 ```
 
 ### 2. Install all dependencies
