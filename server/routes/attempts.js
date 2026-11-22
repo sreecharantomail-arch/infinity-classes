@@ -1,16 +1,24 @@
 import express from 'express';
 import Attempt from '../models/Attempt.js';
 import Question from '../models/Question.js';
+import ExamSession from '../models/ExamSession.js';
 import { verifyToken } from '../middleware/auth.js';
 
 const router = express.Router();
 
 // @route   POST /api/attempts/submit
-// @desc    Submit test answers, evaluate score securely on server, save attempt
+// @desc    Submit test answers, enforce server session & deadline, calculate score securely
 // @access  Protected (Student/Admin)
 router.post('/submit', verifyToken, async (req, res) => {
   try {
-    const { answers = [], timeSpentSeconds = 0, isTimedOut = false } = req.body;
+    const { sessionId, answers = [] } = req.body;
+
+    if (!sessionId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Examination session ID is required for submission.',
+      });
+    }
 
     if (!Array.isArray(answers) || answers.length === 0) {
       return res.status(400).json({
@@ -19,41 +27,146 @@ router.post('/submit', verifyToken, async (req, res) => {
       });
     }
 
-    // Extract question IDs from answers
-    const questionIds = answers.map((a) => a.questionId);
+    // 1. Verify examination session exists
+    const session = await ExamSession.findById(sessionId);
+    if (!session) {
+      return res.status(404).json({
+        success: false,
+        message: 'Examination session not found or invalid.',
+      });
+    }
 
-    // Fetch the actual questions from database
-    const dbQuestions = await Question.find({ _id: { $in: questionIds } });
-    const questionMap = new Map();
-    dbQuestions.forEach((q) => {
-      questionMap.set(q._id.toString(), q);
+    // 2. Ownership verification: session must belong to the authenticated student
+    if (session.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Unauthorized: Examination session belongs to a different student.',
+      });
+    }
+
+    // 3. Atomic race-condition prevention:
+    // Only one submission can transition status from 'in_progress' to 'submitting'
+    const lockedSession = await ExamSession.findOneAndUpdate(
+      { _id: sessionId, status: 'in_progress' },
+      { $set: { status: 'submitting' } },
+      { new: false }
+    );
+
+    if (!lockedSession) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'This examination session has already been submitted or is no longer active.',
+      });
+    }
+
+    // 4. Server-Side 10-Minute Deadline Enforcement:
+    // 15 seconds grace period allowed for network latency on automatic timeout submission
+    const now = Date.now();
+    const GRACE_PERIOD_MS = 15000;
+    const expiryTimestamp = new Date(session.expiresAt).getTime();
+    const isPastDeadline = now > expiryTimestamp + GRACE_PERIOD_MS;
+
+    if (isPastDeadline) {
+      await ExamSession.findByIdAndUpdate(sessionId, { status: 'expired' });
+      return res.status(400).json({
+        success: false,
+        message:
+          'Submission rejected: The 10-minute examination deadline has expired.',
+      });
+    }
+
+    // 5. Question Payload Validation:
+    // Verify answer count matches assigned session questions
+    if (answers.length !== session.questionIds.length) {
+      await ExamSession.findByIdAndUpdate(sessionId, { status: 'in_progress' });
+      return res.status(400).json({
+        success: false,
+        message: `Submission must include all ${session.questionIds.length} assigned questions.`,
+      });
+    }
+
+    const assignedIdSet = new Set(
+      session.questionIds.map((id) => id.toString())
+    );
+    const seenSubmittedIds = new Set();
+
+    for (const ans of answers) {
+      if (!ans.questionId) {
+        await ExamSession.findByIdAndUpdate(sessionId, { status: 'in_progress' });
+        return res.status(400).json({
+          success: false,
+          message: 'Malformed answer: questionId is missing.',
+        });
+      }
+
+      const qIdStr = ans.questionId.toString();
+
+      // Reject duplicate question IDs in payload
+      if (seenSubmittedIds.has(qIdStr)) {
+        await ExamSession.findByIdAndUpdate(sessionId, { status: 'in_progress' });
+        return res.status(400).json({
+          success: false,
+          message: `Duplicate question ID detected in submission: ${qIdStr}`,
+        });
+      }
+      seenSubmittedIds.add(qIdStr);
+
+      // Reject unknown question IDs not assigned to this session
+      if (!assignedIdSet.has(qIdStr)) {
+        await ExamSession.findByIdAndUpdate(sessionId, { status: 'in_progress' });
+        return res.status(400).json({
+          success: false,
+          message: `Unknown question ID not assigned to this session: ${qIdStr}`,
+        });
+      }
+
+      // Validate selectedOptionIndex format (0, 1, 2, 3 or null)
+      if (
+        ans.selectedOptionIndex !== null &&
+        ans.selectedOptionIndex !== undefined
+      ) {
+        const idx = parseInt(ans.selectedOptionIndex, 10);
+        if (isNaN(idx) || idx < 0 || idx > 3) {
+          await ExamSession.findByIdAndUpdate(sessionId, { status: 'in_progress' });
+          return res.status(400).json({
+            success: false,
+            message: `Invalid option index for question ${qIdStr}. Must be 0, 1, 2, 3, or null.`,
+          });
+        }
+      }
+    }
+
+    // 6. Server-Side Score & Time Calculation:
+    // Never trust client-provided scores, timeSpentSeconds, or timeout flags
+    const startedTimestamp = new Date(session.startedAt).getTime();
+    const serverTimeSpentSeconds = Math.min(
+      600,
+      Math.max(1, Math.round((now - startedTimestamp) / 1000))
+    );
+    const isTimedOut = now >= expiryTimestamp;
+
+    // Fetch genuine questions from database
+    const dbQuestions = await Question.find({
+      _id: { $in: session.questionIds },
     });
+    const questionMap = new Map();
+    dbQuestions.forEach((q) => questionMap.set(q._id.toString(), q));
 
     let correctCount = 0;
     let incorrectCount = 0;
     let unattemptedCount = 0;
 
     const evaluatedAnswers = answers.map((sub) => {
-      const q = questionMap.get(sub.questionId?.toString());
-      if (!q) {
-        return {
-          questionId: sub.questionId,
-          questionText: 'Question information unavailable',
-          options: [],
-          selectedOptionIndex: sub.selectedOptionIndex ?? null,
-          correctOptionIndex: 0,
-          isCorrect: false,
-          explanation: '',
-        };
-      }
-
+      const q = questionMap.get(sub.questionId.toString());
       const isAttempted =
         sub.selectedOptionIndex !== null &&
         sub.selectedOptionIndex !== undefined &&
         sub.selectedOptionIndex >= 0 &&
         sub.selectedOptionIndex <= 3;
 
-      const isCorrect = isAttempted && sub.selectedOptionIndex === q.correctOptionIndex;
+      const isCorrect =
+        isAttempted && sub.selectedOptionIndex === q.correctOptionIndex;
 
       if (!isAttempted) {
         unattemptedCount++;
@@ -75,8 +188,12 @@ router.post('/submit', verifyToken, async (req, res) => {
     });
 
     const totalQuestions = evaluatedAnswers.length;
-    const percentage = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
+    const percentage =
+      totalQuestions > 0
+        ? Math.round((correctCount / totalQuestions) * 100)
+        : 0;
 
+    // Create persistent Attempt record
     const attempt = await Attempt.create({
       userId: req.user._id,
       userName: req.user.name,
@@ -87,9 +204,16 @@ router.post('/submit', verifyToken, async (req, res) => {
       incorrectAnswersCount: incorrectCount,
       unattemptedCount,
       percentage,
-      timeSpentSeconds: Math.max(0, parseInt(timeSpentSeconds, 10) || 0),
+      timeSpentSeconds: serverTimeSpentSeconds,
       status: isTimedOut ? 'timed_out' : 'completed',
       answers: evaluatedAnswers,
+    });
+
+    // Finalize ExamSession
+    await ExamSession.findByIdAndUpdate(sessionId, {
+      status: isTimedOut ? 'timed_out' : 'completed',
+      attemptId: attempt._id,
+      submittedAt: new Date(now),
     });
 
     res.status(201).json({
@@ -171,4 +295,3 @@ router.get('/:id', verifyToken, async (req, res) => {
 });
 
 export default router;
-

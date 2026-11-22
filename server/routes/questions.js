@@ -1,5 +1,6 @@
 import express from 'express';
 import Question from '../models/Question.js';
+import ExamSession from '../models/ExamSession.js';
 import { verifyToken, requireAdmin } from '../middleware/auth.js';
 import { defaultQuestions } from '../seed/questionsData.js';
 
@@ -14,22 +15,159 @@ const ensureQuestionsExist = async () => {
   }
 };
 
+// @route   POST /api/questions/start-session
+// @desc    Start or resume a server-side 10-minute examination session
+// @access  Protected (Student/Admin)
+router.post('/start-session', verifyToken, async (req, res) => {
+  try {
+    await ensureQuestionsExist();
+
+    const now = Date.now();
+
+    // 1. Check if the user already has an active, unexpired session in progress
+    const existingSession = await ExamSession.findOne({
+      userId: req.user._id,
+      status: 'in_progress',
+      expiresAt: { $gt: new Date(now) },
+    });
+
+    if (existingSession) {
+      // Fetch the exact 10 questions assigned to this active session
+      const questions = await Question.find({
+        _id: { $in: existingSession.questionIds },
+      });
+
+      // Maintain the order of questionIds
+      const questionMap = new Map();
+      questions.forEach((q) => questionMap.set(q._id.toString(), q));
+      const orderedQuestions = existingSession.questionIds
+        .map((id) => questionMap.get(id.toString()))
+        .filter(Boolean);
+
+      const sanitizedQuestions = orderedQuestions.map((q) => ({
+        _id: q._id,
+        questionText: q.questionText,
+        options: q.options,
+        category: q.category,
+        difficulty: q.difficulty,
+      }));
+
+      return res.status(200).json({
+        success: true,
+        message: 'Resuming active examination session.',
+        sessionId: existingSession._id,
+        startedAt: existingSession.startedAt,
+        expiresAt: existingSession.expiresAt,
+        durationSeconds: 600,
+        questions: sanitizedQuestions,
+      });
+    }
+
+    // 2. No active session exists: sample 10 random questions from MongoDB
+    let questions = await Question.aggregate([{ $sample: { size: 10 } }]);
+    if (questions.length < 10) {
+      questions = await Question.find().limit(10);
+    }
+
+    const questionIds = questions.map((q) => q._id);
+    const startedAt = new Date(now);
+    const expiresAt = new Date(now + 10 * 60 * 1000); // exactly 10 minutes
+
+    // Create persistent ExamSession
+    const newSession = await ExamSession.create({
+      userId: req.user._id,
+      questionIds,
+      startedAt,
+      expiresAt,
+      status: 'in_progress',
+    });
+
+    const sanitizedQuestions = questions.map((q) => ({
+      _id: q._id,
+      questionText: q.questionText,
+      options: q.options,
+      category: q.category,
+      difficulty: q.difficulty,
+    }));
+
+    res.status(201).json({
+      success: true,
+      message: 'New examination session started.',
+      sessionId: newSession._id,
+      startedAt: newSession.startedAt,
+      expiresAt: newSession.expiresAt,
+      durationSeconds: 600,
+      questions: sanitizedQuestions,
+    });
+  } catch (error) {
+    console.error('Error starting examination session:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to start examination session.',
+    });
+  }
+});
+
 // @route   GET /api/questions/test
-// @desc    Get 10 questions for the test screen (answers stripped for security!)
+// @desc    Backward compatible wrapper that returns test session questions
 // @access  Protected (Student/Admin)
 router.get('/test', verifyToken, async (req, res) => {
   try {
     await ensureQuestionsExist();
 
-    // Get 10 random questions using MongoDB aggregation
-    let questions = await Question.aggregate([{ $sample: { size: 10 } }]);
+    // Delegate to start-session logic
+    const now = Date.now();
+    const existingSession = await ExamSession.findOne({
+      userId: req.user._id,
+      status: 'in_progress',
+      expiresAt: { $gt: new Date(now) },
+    });
 
-    // Fallback if aggregation returns fewer than 10
+    if (existingSession) {
+      const questions = await Question.find({
+        _id: { $in: existingSession.questionIds },
+      });
+      const questionMap = new Map();
+      questions.forEach((q) => questionMap.set(q._id.toString(), q));
+      const orderedQuestions = existingSession.questionIds
+        .map((id) => questionMap.get(id.toString()))
+        .filter(Boolean);
+
+      const sanitizedQuestions = orderedQuestions.map((q) => ({
+        _id: q._id,
+        questionText: q.questionText,
+        options: q.options,
+        category: q.category,
+        difficulty: q.difficulty,
+      }));
+
+      return res.status(200).json({
+        success: true,
+        sessionId: existingSession._id,
+        startedAt: existingSession.startedAt,
+        expiresAt: existingSession.expiresAt,
+        count: sanitizedQuestions.length,
+        questions: sanitizedQuestions,
+      });
+    }
+
+    let questions = await Question.aggregate([{ $sample: { size: 10 } }]);
     if (questions.length < 10) {
       questions = await Question.find().limit(10);
     }
 
-    // Strip correctOptionIndex and explanation so examinees cannot cheat via devtools
+    const questionIds = questions.map((q) => q._id);
+    const startedAt = new Date(now);
+    const expiresAt = new Date(now + 10 * 60 * 1000);
+
+    const newSession = await ExamSession.create({
+      userId: req.user._id,
+      questionIds,
+      startedAt,
+      expiresAt,
+      status: 'in_progress',
+    });
+
     const sanitizedQuestions = questions.map((q) => ({
       _id: q._id,
       questionText: q.questionText,
@@ -40,6 +178,9 @@ router.get('/test', verifyToken, async (req, res) => {
 
     res.status(200).json({
       success: true,
+      sessionId: newSession._id,
+      startedAt: newSession.startedAt,
+      expiresAt: newSession.expiresAt,
       count: sanitizedQuestions.length,
       questions: sanitizedQuestions,
     });
@@ -234,4 +375,3 @@ router.post('/reset-seed', verifyToken, requireAdmin, async (req, res) => {
 });
 
 export default router;
-

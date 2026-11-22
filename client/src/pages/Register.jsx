@@ -8,7 +8,7 @@ export default function Register() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState('student');
+  const [isAdminMode, setIsAdminMode] = useState(false);
   const [adminSecret, setAdminSecret] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -19,8 +19,10 @@ export default function Register() {
     e.preventDefault();
     setError('');
 
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters long.');
+    if (password.length < 8 || !/(?=.*[a-zA-Z])(?=.*\d)/.test(password)) {
+      setError(
+        'Password must be at least 8 characters long and contain both letters and numbers.'
+      );
       return;
     }
 
@@ -33,8 +35,8 @@ export default function Register() {
         password,
       };
 
-      if (role === 'admin') {
-        payload.adminSecret = adminSecret || 'infinity_admin_secret_2026';
+      if (isAdminMode && adminSecret.trim()) {
+        payload.adminSecret = adminSecret.trim();
       }
 
       const res = await api.register(payload);
@@ -110,14 +112,14 @@ export default function Register() {
 
             <div>
               <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                Password (min 6 characters)
+                Password (min 8 characters, letters & numbers)
               </label>
               <div className="relative">
                 <Lock className="w-5 h-5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="password"
                   required
-                  minLength={6}
+                  minLength={8}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
@@ -126,56 +128,38 @@ export default function Register() {
               </div>
             </div>
 
-            {/* Account Role Selector */}
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                Select Account Role
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setRole('student')}
-                  className={`py-2 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
-                    role === 'student'
-                      ? 'border-indigo-600 bg-indigo-50 text-indigo-700 ring-2 ring-indigo-500/20'
-                      : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  <User className="w-4 h-4" />
-                  Student
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRole('admin')}
-                  className={`py-2 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 transition-all ${
-                    role === 'admin'
-                      ? 'border-indigo-600 bg-indigo-50 text-indigo-700 ring-2 ring-indigo-500/20'
-                      : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
-                  }`}
-                >
-                  <Shield className="w-4 h-4" />
-                  Admin (Bonus)
-                </button>
-              </div>
-            </div>
+            {/* Optional Administrator Toggle */}
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => setIsAdminMode(!isAdminMode)}
+                className="text-xs font-medium text-slate-400 hover:text-indigo-600 transition-colors flex items-center gap-1.5"
+              >
+                <Shield className="w-3.5 h-3.5" />
+                {isAdminMode ? 'Hide Admin Passkey' : 'Have an Admin Authorization Key?'}
+              </button>
 
-            {role === 'admin' && (
-              <div>
-                <label className="block text-xs font-semibold text-amber-800 uppercase tracking-wider mb-1.5">
-                  Admin Passcode (Default: infinity_admin_secret_2026)
-                </label>
-                <div className="relative">
-                  <Key className="w-4 h-4 text-amber-500 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="password"
-                    value={adminSecret}
-                    onChange={(e) => setAdminSecret(e.target.value)}
-                    placeholder="infinity_admin_secret_2026"
-                    className="w-full pl-9 pr-3 py-2 rounded-xl border border-amber-300 text-xs bg-amber-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                  />
+              {isAdminMode && (
+                <div className="mt-2.5 p-3 rounded-xl bg-amber-50/70 border border-amber-200 space-y-1.5 animate-in fade-in">
+                  <label className="block text-[11px] font-bold text-amber-900 uppercase tracking-wider">
+                    Administrative Authorization Secret
+                  </label>
+                  <div className="relative">
+                    <Key className="w-4 h-4 text-amber-600 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="password"
+                      value={adminSecret}
+                      onChange={(e) => setAdminSecret(e.target.value)}
+                      placeholder="Enter server-provisioned ADMIN_SECRET"
+                      className="w-full pl-9 pr-3 py-1.5 rounded-lg border border-amber-300 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+                  <p className="text-[10px] text-amber-700">
+                    Required only if you are authorized to provision an administrative account.
+                  </p>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
             <button
               type="submit"

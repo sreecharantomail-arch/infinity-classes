@@ -1,12 +1,12 @@
 # Mini Online Test Application (MERN Stack)
 
-> A modern, responsive, full-stack online examination platform built with **MongoDB, Express.js, React, and Node.js (MERN)** for the **Infinity Classes** internship technical assessment.
+> A modern, secure, responsive full-stack online examination platform built with **MongoDB, Express.js, React, and Node.js (MERN)** for the **Infinity Classes** technical assessment.
 
 ---
 
 ## 🌟 Live Demo & Repository
 
-- **Live Application Link**: [https://infinity-classes-online-test-app.onrender.com](https://infinity-classes-online-test-app.onrender.com) *(or your deployed Render/Vercel URL)*
+- **Live Application Link**: [https://infinity-classes-online-test-app.onrender.com](https://infinity-classes-online-test-app.onrender.com)
 - **GitHub Repository**: [https://github.com/sreecharantomail-arch/infinity-classes](https://github.com/sreecharantomail-arch/infinity-classes)
 
 ---
@@ -15,25 +15,32 @@
 
 | Required Feature | Status | Description |
 | :--- | :---: | :--- |
-| **1. Authentication** | ✅ Implemented | Students can register and sign in with email & password. Passwords securely hashed with `bcryptjs`, sessions protected via JWT. |
-| **2. Test Screen** | ✅ Implemented | 10 multiple-choice questions loaded dynamically from MongoDB with a question matrix, option selection, clear response, and mark for review. |
-| **3. 10-Minute Timer** | ✅ Implemented | Live countdown timer (`10:00`). Displays color-coded urgency alerts (< 2m and < 1m) and **automatically submits the test when the timer reaches 00:00**. |
-| **4. Result & Review** | ✅ Implemented | Instant score calculation on the server, accuracy percentage, time spent, question-by-question breakdown showing student choice vs. correct answer, and detailed explanations. |
-| **5. Attempt History** | ✅ Implemented | Dedicated history dashboard showing past test attempts with scores, accuracy, timestamps, and direct links to review any past attempt. |
+| **1. Authentication** | ✅ Implemented | Students can register and sign in with email & password. Passwords securely hashed with `bcryptjs` (10 salt rounds), sessions protected via stateless JWT. Rate limiting active on login. |
+| **2. Test Screen** | ✅ Implemented | Exactly 10 multiple-choice questions loaded dynamically from MongoDB via server-managed `ExamSession`. Answers stripped at the API level. Option selection, clear response, and review flags. |
+| **3. Server-Controlled 10-Minute Timer** | ✅ Implemented | Live countdown timer (`10:00`) anchored to server-side `expiresAt` timestamp. Immune to tab throttling and browser refresh. **Automatically submits when time expires**. |
+| **4. Result & Review** | ✅ Implemented | Scores calculated exclusively on the backend. Displays total score, accuracy percentage, time spent, question-by-question breakdown showing student choice vs. correct answer, and solutions. |
+| **5. Attempt History** | ✅ Implemented | Dedicated history dashboard showing past test attempts with scores, accuracy, timestamps, and direct links to review any past attempt. Protected by strict user-level data isolation. |
 | **6. Admin Panel (Bonus)** | ✅ Implemented | Complete question management system: add new questions with 4 options, designate correct option, assign category & difficulty, delete questions, and restore question bank defaults. |
 
 ---
 
-## 🔑 Pre-Seeded Demo Credentials
+## 🛡️ Enterprise Security Implementations
 
-To make evaluation seamless, the app comes with pre-seeded test accounts and **1-click demo autofill buttons** on the sign-in page:
-
-| Role | Email | Password | Access Privileges |
-| :--- | :--- | :--- | :--- |
-| **Student** | `student@infinity.com` | `student123` | Dashboard, 10-Question Test, History & Result Reviews |
-| **Admin (Bonus)** | `admin@infinity.com` | `admin123` | Student access + Full Question Bank Management & Add Question |
-
-> You can also register any new student or admin account anytime through the **Create Student Account** page.
+- **Server-Side Examination Sessions (`ExamSession`)**:
+  - A unique examination session is created in MongoDB with exact start and expiry timestamps.
+  - Re-opening or refreshing the page synchronizes to the existing server deadline, preventing time manipulation.
+- **Atomic Race-Condition & Duplicate Prevention**:
+  - Test submissions transition session status atomically (`findOneAndUpdate({ status: 'in_progress' })`), preventing duplicate attempts or simultaneous multi-tab submissions.
+- **Server-Side Score & Time Calculation**:
+  - The server queries authentic answer keys from MongoDB and computes the score. Client-submitted scores, durations, and timeout flags are completely disregarded.
+- **Deadline Enforcement**:
+  - The backend rejects submissions received after the 10-minute deadline (+15s network latency grace period).
+- **Strict Input Validation**:
+  - NoSQL injection guards enforce primitive string types. Question IDs in submissions must match the exact 10 assigned IDs; duplicate or foreign IDs are rejected with `400 Bad Request`.
+- **Login Rate Limiting**:
+  - Sliding-window rate limiter blocks brute-force login attempts (max 5 failed attempts per 15 minutes per IP).
+- **Zero-Knowledge Distribution**:
+  - The test question endpoint strips `correctOptionIndex` and `explanation`, preventing examinees from inspecting answers in browser DevTools.
 
 ---
 
@@ -50,7 +57,7 @@ To make evaluation seamless, the app comes with pre-seeded test accounts and **1
   - **JSON Web Tokens (JWT)** & **bcryptjs** (Stateless authentication & password encryption)
   - **CORS** & **dotenv** (Security and environment configuration)
 - **Database**:
-  - **MongoDB** & **Mongoose ODM** (Document schemas, validation, aggregation pipelines)
+  - **MongoDB Atlas** & **Mongoose ODM** (Document schemas, validation, aggregation pipelines)
 
 ---
 
@@ -78,11 +85,12 @@ infinity classess/
 │   ├── models/
 │   │   ├── User.js             # User schema with bcrypt password hashing
 │   │   ├── Question.js         # Multiple-choice question schema
-│   │   └── Attempt.js          # Test submission & score history schema
+│   │   ├── Attempt.js          # Test submission & score history schema
+│   │   └── ExamSession.js      # Server-side examination session schema
 │   ├── routes/
-│   │   ├── auth.js             # /api/auth (register, login, me)
-│   │   ├── questions.js        # /api/questions (test questions, admin CRUD)
-│   │   └── attempts.js         # /api/attempts (submit, my-history, :id)
+│   │   ├── auth.js             # /api/auth (register, login, me with rate limiting)
+│   │   ├── questions.js        # /api/questions (start session, test questions, admin CRUD)
+│   │   └── attempts.js         # /api/attempts (secure submit, my-history, :id)
 │   ├── seed/
 │   │   ├── questionsData.js    # 15 high-quality pre-seeded questions
 │   │   └── seedQuestions.js    # Database seeding script
@@ -100,7 +108,7 @@ infinity classess/
 
 ### Prerequisites
 - **Node.js** (v18 or higher recommended)
-- **MongoDB** (Local MongoDB instance running on `localhost:27017` or MongoDB Atlas URI)
+- **MongoDB** (Local MongoDB instance or MongoDB Atlas cluster)
 
 ### 1. Clone the repository
 ```bash
@@ -109,23 +117,22 @@ cd infinity-classes
 ```
 
 ### 2. Install all dependencies
-You can install dependencies for root, server, and client in one command:
 ```bash
 npm run install-all
 ```
-*(Or manually run `npm install` in root, `server/`, and `client/`)*
 
 ### 3. Configure Environment Variables
-A default `.env` file is already provided in `server/.env`. If you want to use MongoDB Atlas, update `server/.env`:
+Copy `.env.example` to `server/.env`:
 ```env
 PORT=5000
 MONGODB_URI=mongodb://127.0.0.1:27017/online_test_app
-JWT_SECRET=supersecret_jwt_key_infinity_classes_2026
+JWT_SECRET=your_strong_random_jwt_secret_min_32_chars
+ADMIN_SECRET=your_secure_admin_provisioning_key
+CLIENT_URL=http://localhost:5173,http://localhost:5000
 NODE_ENV=development
 ```
 
 ### 4. Seed the Database
-Populate the database with the initial 15 multiple-choice questions and demo accounts:
 ```bash
 npm run seed
 ```
@@ -143,48 +150,19 @@ Alternatively, to build and run production mode:
 npm run build
 npm start
 ```
-The app will be served at [http://localhost:5000](http://localhost:5000).
 
 ---
 
-## 🌐 Deployment Instructions (Live Link)
+## 🌐 Deployment Instructions (Render)
 
-### Deploying to Render (Recommended - Free & 1-Click)
 1. Push your repository to GitHub.
-2. Sign in to [Render](https://render.com) and click **New +** -> **Web Service**.
-3. Connect your GitHub repository.
-4. Set the following configuration:
-   - **Environment**: `Node`
-   - **Build Command**: `npm run install-all && npm run build`
+2. Create a **Web Service** on [Render](https://render.com).
+3. Set:
+   - **Build Command**: `npm run build`
    - **Start Command**: `npm start`
-5. In the **Environment Variables** section, add:
+4. Set Environment Variables in Render:
    - `NODE_ENV`: `production`
-   - `JWT_SECRET`: `your_random_jwt_secret`
-   - `MONGODB_URI`: *Your MongoDB Atlas connection string (free M0 tier)*
-6. Click **Deploy Web Service**. Render will build the React client and serve it through Express with full API routing!
-
-### Setting Up Free MongoDB Atlas
-1. Create a free account at [mongodb.com/atlas](https://www.mongodb.com/atlas).
-2. Create a free **M0 Sandbox** cluster.
-3. Under **Database Access**, create a user (e.g. `admin` and password).
-4. Under **Network Access**, allow access from anywhere (`0.0.0.0/0`).
-5. Click **Connect** -> **Connect your application** (Drivers) and copy the connection string into your `MONGODB_URI` environment variable.
-
----
-
-## 🔒 Security Best Practices Implemented
-
-- **Answer Protection**: The `/api/questions/test` route deliberately strips out `correctOptionIndex` and `explanation` so examinees cannot inspect network payloads or devtools to see answers before submission.
-- **Server-Side Evaluation**: Test scores are computed strictly on the backend by querying the verified question records from MongoDB.
-- **Password Salting & Hashing**: Passwords are encrypted using `bcryptjs` with 10 salt rounds before persistence.
-- **Session Protection**: JWT authentication protects user routes and ensures students can only review their own test attempts.
-
----
-
-## 📬 Contact & Submission Details
-
-- **Candidate**: Technical Assessment Applicant
-- **Submitted to**: Dr. Nikhil Arora
-- **Submission Date**: 22 November, 2026
-- **Deadline**: 23 November, 2026
-
+   - `JWT_SECRET`: *(A securely generated random 32+ character string)*
+   - `MONGODB_URI`: *(Your MongoDB Atlas connection string)*
+   - `CLIENT_URL`: *(Your live Render frontend URL)*
+5. Deploy Web Service.

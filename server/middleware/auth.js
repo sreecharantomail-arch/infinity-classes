@@ -3,11 +3,20 @@ import User from '../models/User.js';
 
 export const verifyToken = async (req, res, next) => {
   try {
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      console.error('CRITICAL: JWT_SECRET environment variable is missing.');
+      return res.status(500).json({
+        success: false,
+        message: 'Server security misconfiguration: JWT secret not defined.',
+      });
+    }
+
     let token = null;
 
     if (
       req.headers.authorization &&
-      req.headers.authorization.startsWith('Bearer')
+      req.headers.authorization.startsWith('Bearer ')
     ) {
       token = req.headers.authorization.split(' ')[1];
     }
@@ -19,10 +28,7 @@ export const verifyToken = async (req, res, next) => {
       });
     }
 
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || 'supersecret_jwt_key_infinity_classes_2026'
-    );
+    const decoded = jwt.verify(token, jwtSecret);
 
     const user = await User.findById(decoded.id).select('-password');
     if (!user) {
@@ -52,4 +58,3 @@ export const requireAdmin = (req, res, next) => {
     });
   }
 };
-

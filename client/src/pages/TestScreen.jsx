@@ -15,15 +15,14 @@ import {
 } from 'lucide-react';
 
 const SESSION_STORAGE_KEY = 'online_test_active_session';
-const TEST_DURATION_MS = 10 * 60 * 1000; // 10 minutes
 
 export default function TestScreen() {
+  const [sessionId, setSessionId] = useState(null);
   const [questions, setQuestions] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedAnswers, setSelectedAnswers] = useState({});
   const [markedForReview, setMarkedForReview] = useState(new Set());
   const [targetEndTime, setTargetEndTime] = useState(null);
-  const [startTime, setStartTime] = useState(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -34,14 +33,14 @@ export default function TestScreen() {
   const navigate = useNavigate();
 
   // Helper to persist current session to storage
-  const saveSession = useCallback((qList, answers, marked, endMs, startMs) => {
+  const saveSession = useCallback((sessId, qList, answers, marked, endMs) => {
     try {
       const payload = {
+        sessionId: sessId,
         questions: qList,
         selectedAnswers: answers,
         markedForReview: Array.from(marked),
         targetEndTime: endMs,
-        startTime: startMs,
       };
       localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(payload));
     } catch (e) {
@@ -52,13 +51,9 @@ export default function TestScreen() {
   // Submit test handler
   const performSubmit = useCallback(
     async (isTimedOut = false) => {
-      if (isSubmittingRef.current) return;
+      if (isSubmittingRef.current || !sessionId) return;
       isSubmittingRef.current = true;
       setSubmitting(true);
-
-      const actualStart = startTime || Date.now();
-      const elapsedSeconds = Math.round((Date.now() - actualStart) / 1000);
-      const timeSpentSeconds = Math.min(Math.max(1, elapsedSeconds), 600); // capped at 10 minutes
 
       // Format answers payload
       const answersPayload = questions.map((q) => ({
@@ -69,9 +64,8 @@ export default function TestScreen() {
 
       try {
         const res = await api.submitTest({
+          sessionId,
           answers: answersPayload,
-          timeSpentSeconds,
-          isTimedOut,
         });
 
         // Clear active session upon successful submission
@@ -89,7 +83,7 @@ export default function TestScreen() {
         setSubmitting(false);
       }
     },
-    [questions, selectedAnswers, startTime, navigate]
+    [sessionId, questions, selectedAnswers, navigate]
   );
 
   // Auto-submit when timer expires
@@ -102,74 +96,65 @@ export default function TestScreen() {
   useEffect(() => {
     const initializeTest = async () => {
       try {
-        // 1. Check if an active session already exists in localStorage
-        const saved = localStorage.getItem(SESSION_STORAGE_KEY);
-        if (saved) {
-          try {
+        // Read any cached answers from local storage
+        let cachedAnswers = {};
+        let cachedMarked = new Set();
+        try {
+          const saved = localStorage.getItem(SESSION_STORAGE_KEY);
+          if (saved) {
             const parsed = JSON.parse(saved);
-            const now = Date.now();
-
-            // Check if saved session is still within the 10-minute window
-            if (parsed.targetEndTime && parsed.questions?.length > 0) {
-              if (parsed.targetEndTime <= now) {
-                // Session expired while user was away! Auto-submit directly
-                setQuestions(parsed.questions);
-                setSelectedAnswers(parsed.selectedAnswers || {});
-                setStartTime(parsed.startTime || now - TEST_DURATION_MS);
-                setAutoSubmitNotice(true);
-                setLoading(false);
-                // Perform submission with cached answers
-                isSubmittingRef.current = true;
-                const expiredAnswers = parsed.questions.map((q) => ({
-                  questionId: q._id,
-                  selectedOptionIndex:
-                    parsed.selectedAnswers && parsed.selectedAnswers[q._id] !== undefined
-                      ? parsed.selectedAnswers[q._id]
-                      : null,
-                }));
-                const res = await api.submitTest({
-                  answers: expiredAnswers,
-                  timeSpentSeconds: 600,
-                  isTimedOut: true,
-                });
-                localStorage.removeItem(SESSION_STORAGE_KEY);
-                if (res.success && res.attemptId) {
-                  navigate(`/result/${res.attemptId}`, { replace: true });
-                }
-                return;
-              } else {
-                // Resume ongoing test session with persistent countdown & selections
-                setQuestions(parsed.questions);
-                setSelectedAnswers(parsed.selectedAnswers || {});
-                setMarkedForReview(new Set(parsed.markedForReview || []));
-                setTargetEndTime(parsed.targetEndTime);
-                setStartTime(parsed.startTime || now);
-                setLoading(false);
-                return;
-              }
-            }
-          } catch (e) {
-            console.warn('Corrupted saved session, re-initializing...', e);
-            localStorage.removeItem(SESSION_STORAGE_KEY);
+            cachedAnswers = parsed.selectedAnswers || {};
+            cachedMarked = new Set(parsed.markedForReview || []);
           }
+        } catch (e) {
+          console.warn('Local storage parse error:', e);
         }
 
-        // 2. Otherwise start a fresh test session
-        const res = await api.getTestQuestions();
-        if (res.success && res.questions?.length > 0) {
-          const now = Date.now();
-          const calculatedEnd = now + TEST_DURATION_MS;
+        // Call backend server to start or resume the active examination session
+        const res = await api.startTestSession();
 
+        if (res.success && res.sessionId && res.questions?.length > 0) {
+          const expiryMs = new Date(res.expiresAt).getTime();
+          const now = Date.now();
+
+          // Check if session is already expired
+          if (expiryMs <= now) {
+            setAutoSubmitNotice(true);
+            setQuestions(res.questions);
+            setSessionId(res.sessionId);
+            setLoading(false);
+
+            // Auto-submit expired session
+            isSubmittingRef.current = true;
+            const expiredPayload = res.questions.map((q) => ({
+              questionId: q._id,
+              selectedOptionIndex:
+                cachedAnswers[q._id] !== undefined ? cachedAnswers[q._id] : null,
+            }));
+            const submitRes = await api.submitTest({
+              sessionId: res.sessionId,
+              answers: expiredPayload,
+            });
+            localStorage.removeItem(SESSION_STORAGE_KEY);
+            if (submitRes.success && submitRes.attemptId) {
+              navigate(`/result/${submitRes.attemptId}`, { replace: true });
+            }
+            return;
+          }
+
+          setSessionId(res.sessionId);
           setQuestions(res.questions);
-          setStartTime(now);
-          setTargetEndTime(calculatedEnd);
-          saveSession(res.questions, {}, new Set(), calculatedEnd, now);
+          setTargetEndTime(expiryMs);
+          setSelectedAnswers(cachedAnswers);
+          setMarkedForReview(cachedMarked);
+
+          saveSession(res.sessionId, res.questions, cachedAnswers, cachedMarked, expiryMs);
         } else {
-          setError('No questions available in the question bank.');
+          setError('Failed to establish examination session with server.');
         }
       } catch (err) {
         console.error('Failed to initialize test:', err);
-        setError(err.message || 'Failed to load test questions. Please try again.');
+        setError(err.message || 'Failed to start examination session. Please try again.');
       } finally {
         setLoading(false);
       }
@@ -183,25 +168,25 @@ export default function TestScreen() {
   const isMarked = currentQuestion && markedForReview.has(currentQuestion._id);
 
   const handleSelectOption = (optionIndex) => {
-    if (!currentQuestion) return;
+    if (!currentQuestion || !sessionId) return;
     const updatedAnswers = {
       ...selectedAnswers,
       [currentQuestion._id]: optionIndex,
     };
     setSelectedAnswers(updatedAnswers);
-    saveSession(questions, updatedAnswers, markedForReview, targetEndTime, startTime);
+    saveSession(sessionId, questions, updatedAnswers, markedForReview, targetEndTime);
   };
 
   const handleClearResponse = () => {
-    if (!currentQuestion) return;
+    if (!currentQuestion || !sessionId) return;
     const updatedAnswers = { ...selectedAnswers };
     delete updatedAnswers[currentQuestion._id];
     setSelectedAnswers(updatedAnswers);
-    saveSession(questions, updatedAnswers, markedForReview, targetEndTime, startTime);
+    saveSession(sessionId, questions, updatedAnswers, markedForReview, targetEndTime);
   };
 
   const toggleMarkForReview = () => {
-    if (!currentQuestion) return;
+    if (!currentQuestion || !sessionId) return;
     const nextMarked = new Set(markedForReview);
     if (nextMarked.has(currentQuestion._id)) {
       nextMarked.delete(currentQuestion._id);
@@ -209,7 +194,7 @@ export default function TestScreen() {
       nextMarked.add(currentQuestion._id);
     }
     setMarkedForReview(nextMarked);
-    saveSession(questions, selectedAnswers, nextMarked, targetEndTime, startTime);
+    saveSession(sessionId, questions, selectedAnswers, nextMarked, targetEndTime);
   };
 
   const answeredCount = Object.keys(selectedAnswers).length;
@@ -220,8 +205,8 @@ export default function TestScreen() {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
         <div className="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
-        <h2 className="text-lg font-bold text-slate-800">Preparing Your Test Paper...</h2>
-        <p className="text-sm text-slate-500 mt-1">Loading 10 questions from the database</p>
+        <h2 className="text-lg font-bold text-slate-800">Starting Examination Session...</h2>
+        <p className="text-sm text-slate-500 mt-1">Registering secure 10-minute timer on server</p>
       </div>
     );
   }
@@ -259,12 +244,12 @@ export default function TestScreen() {
               <h1 className="font-bold text-slate-900 text-sm sm:text-base leading-tight">
                 Online Assessment
               </h1>
-              <p className="text-xs text-slate-400">10 Questions • Multiple Choice</p>
+              <p className="text-xs text-slate-400">10 Questions • Server Enforced Deadline</p>
             </div>
           </div>
 
           <div className="flex items-center gap-4">
-            {/* 10-Minute Countdown Timer using epoch end timestamp */}
+            {/* 10-Minute Countdown Timer using server epoch end timestamp */}
             {targetEndTime && (
               <Timer
                 targetEndTime={targetEndTime}

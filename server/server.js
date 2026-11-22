@@ -9,10 +9,23 @@ import questionRoutes from './routes/questions.js';
 import attemptRoutes from './routes/attempts.js';
 import { seedDatabase } from './seed/seedQuestions.js';
 
-dotenv.config();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Load environment variables from server/.env or root .env
+dotenv.config({ path: path.join(__dirname, '.env') });
+dotenv.config();
+
+// Requirement 1: Fail application startup if JWT_SECRET is missing in production
+if (!process.env.JWT_SECRET) {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('❌ FATAL ERROR: JWT_SECRET environment variable is required in production.');
+    console.error('Server execution aborted for security.');
+    process.exit(1);
+  } else {
+    console.warn('⚠️ WARNING: JWT_SECRET is not configured. Please define it in your .env file.');
+  }
+}
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -24,9 +37,36 @@ connectDB().then((connected) => {
   }
 });
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// Requirement 6: Restrict CORS to configured origins
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:5000',
+  'https://infinity-classes-online-test-app.onrender.com',
+];
+
+if (process.env.CLIENT_URL) {
+  process.env.CLIENT_URL.split(',').forEach((url) => {
+    const trimmed = url.trim();
+    if (trimmed && !allowedOrigins.includes(trimmed)) {
+      allowedOrigins.push(trimmed);
+    }
+  });
+}
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (e.g. mobile apps, curl, or same-origin static serving)
+      if (!origin || allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS policy blocked access from origin: ${origin}`));
+    },
+    credentials: true,
+  })
+);
+
+app.use(express.json({ limit: '1mb' }));
 
 // API Health Route
 app.get('/api/health', (req, res) => {
@@ -61,7 +101,7 @@ app.get('*', (req, res) => {
 
 // Global Error Handler
 app.use((err, req, res, next) => {
-  console.error('Unhandled Server Error:', err);
+  console.error('Unhandled Server Error:', err.message);
   res.status(500).json({
     success: false,
     message: err.message || 'Internal Server Error',

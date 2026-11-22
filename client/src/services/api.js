@@ -41,7 +41,13 @@ export const api = {
       headers: getHeaders(),
     }).then(handleResponse),
 
-  // Test & Questions
+  // Test & Examination Sessions
+  startTestSession: () =>
+    fetch(`${API_BASE}/questions/start-session`, {
+      method: 'POST',
+      headers: getHeaders(),
+    }).then(handleResponse),
+
   getTestQuestions: () =>
     fetch(`${API_BASE}/questions/test`, {
       headers: getHeaders(),
@@ -92,4 +98,3 @@ export const api = {
 };
 
 export default api;
-
