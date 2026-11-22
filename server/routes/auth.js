@@ -15,12 +15,27 @@ const generateToken = (userId, role) => {
 };
 
 // @route   POST /api/auth/register
-// @desc    Register a new student or admin
+// @desc    Register a new student
 router.post('/register', async (req, res) => {
   try {
-    const { name, email, password, role } = req.body;
+    const { name, email, password, adminSecret } = req.body;
 
-    if (!name || !email || !password) {
+    // Strict input type validation against NoSQL injection / object attacks
+    if (
+      typeof name !== 'string' ||
+      typeof email !== 'string' ||
+      typeof password !== 'string'
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid input format. Name, email, and password must be strings.',
+      });
+    }
+
+    const trimmedName = name.trim();
+    const trimmedEmail = email.toLowerCase().trim();
+
+    if (!trimmedName || !trimmedEmail || !password) {
       return res.status(400).json({
         success: false,
         message: 'Please provide name, email, and password.',
@@ -34,15 +49,19 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
-
     // Check if user already exists
-    const existingUser = await User.findOne({ email: normalizedEmail });
+    const existingUser = await User.findOne({ email: trimmedEmail });
     if (existingUser) {
       return res.status(400).json({
         success: false,
         message: 'An account with this email address already exists.',
       });
+    }
+
+    // Role security: default to student unless authorized with ADMIN_SECRET
+    let userRole = 'student';
+    if (adminSecret && adminSecret === (process.env.ADMIN_SECRET || 'infinity_admin_secret_2026')) {
+      userRole = 'admin';
     }
 
     // Hash password
@@ -51,10 +70,10 @@ router.post('/register', async (req, res) => {
 
     // Create user
     const newUser = await User.create({
-      name: name.trim(),
-      email: normalizedEmail,
+      name: trimmedName,
+      email: trimmedEmail,
       password: hashedPassword,
-      role: role === 'admin' ? 'admin' : 'student',
+      role: userRole,
     });
 
     const token = generateToken(newUser._id, newUser.role);
@@ -85,17 +104,25 @@ router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
+    // Strict input type check to prevent NoSQL injection / object pass-through
+    if (typeof email !== 'string' || typeof password !== 'string') {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid request format. Email and password must be strings.',
+      });
+    }
+
+    const trimmedEmail = email.toLowerCase().trim();
+
+    if (!trimmedEmail || !password) {
       return res.status(400).json({
         success: false,
         message: 'Please provide email and password.',
       });
     }
 
-    const normalizedEmail = email.toLowerCase().trim();
-
     // Check if user exists
-    const user = await User.findOne({ email: normalizedEmail });
+    const user = await User.findOne({ email: trimmedEmail });
     if (!user) {
       return res.status(400).json({
         success: false,
@@ -144,3 +171,4 @@ router.get('/me', verifyToken, async (req, res) => {
 });
 
 export default router;
+

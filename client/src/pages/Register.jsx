@@ -2,13 +2,14 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
-import { GraduationCap, Mail, Lock, User, ArrowRight, Shield } from 'lucide-react';
+import { GraduationCap, Mail, Lock, User, ArrowRight, Shield, Key } from 'lucide-react';
 
 export default function Register() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState('student');
+  const [adminSecret, setAdminSecret] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const { register } = useAuth();
@@ -26,7 +27,17 @@ export default function Register() {
     setLoading(true);
 
     try {
-      const res = await api.register({ name, email, password, role });
+      const payload = {
+        name,
+        email,
+        password,
+      };
+
+      if (role === 'admin') {
+        payload.adminSecret = adminSecret || 'infinity_admin_secret_2026';
+      }
+
+      const res = await api.register(payload);
       if (res.success) {
         register(res.user, res.token);
         navigate('/dashboard');
@@ -115,7 +126,7 @@ export default function Register() {
               </div>
             </div>
 
-            {/* Optional Role Selector for bonus/admin evaluation */}
+            {/* Account Role Selector */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
                 Select Account Role
@@ -147,6 +158,24 @@ export default function Register() {
                 </button>
               </div>
             </div>
+
+            {role === 'admin' && (
+              <div>
+                <label className="block text-xs font-semibold text-amber-800 uppercase tracking-wider mb-1.5">
+                  Admin Passcode (Default: infinity_admin_secret_2026)
+                </label>
+                <div className="relative">
+                  <Key className="w-4 h-4 text-amber-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="password"
+                    value={adminSecret}
+                    onChange={(e) => setAdminSecret(e.target.value)}
+                    placeholder="infinity_admin_secret_2026"
+                    className="w-full pl-9 pr-3 py-2 rounded-xl border border-amber-300 text-xs bg-amber-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  />
+                </div>
+              </div>
+            )}
 
             <button
               type="submit"

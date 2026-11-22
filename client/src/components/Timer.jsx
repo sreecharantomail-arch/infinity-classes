@@ -1,30 +1,51 @@
 import React, { useEffect, useState } from 'react';
 import { Clock, AlertTriangle } from 'lucide-react';
 
-export default function Timer({ durationSeconds = 600, onTimeUp, isSubmitted = false }) {
-  const [timeLeft, setTimeLeft] = useState(durationSeconds);
+export default function Timer({
+  targetEndTime,
+  durationSeconds = 600,
+  onTimeUp,
+  isSubmitted = false,
+}) {
+  // If targetEndTime is passed (epoch ms), use that; otherwise calculate from durationSeconds
+  const [timeLeft, setTimeLeft] = useState(() => {
+    if (targetEndTime) {
+      return Math.max(0, Math.ceil((targetEndTime - Date.now()) / 1000));
+    }
+    return durationSeconds;
+  });
 
   useEffect(() => {
     if (isSubmitted) return;
 
-    if (timeLeft <= 0) {
+    const calculateRemaining = () => {
+      if (targetEndTime) {
+        return Math.max(0, Math.ceil((targetEndTime - Date.now()) / 1000));
+      }
+      return timeLeft;
+    };
+
+    const initialRemaining = calculateRemaining();
+    if (initialRemaining <= 0) {
       if (onTimeUp) onTimeUp();
       return;
     }
 
     const timer = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          if (onTimeUp) onTimeUp();
-          return 0;
-        }
-        return prev - 1;
-      });
+      const remaining = targetEndTime
+        ? Math.max(0, Math.ceil((targetEndTime - Date.now()) / 1000))
+        : timeLeft - 1;
+
+      setTimeLeft(remaining);
+
+      if (remaining <= 0) {
+        clearInterval(timer);
+        if (onTimeUp) onTimeUp();
+      }
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [timeLeft, isSubmitted, onTimeUp]);
+  }, [targetEndTime, isSubmitted, onTimeUp]);
 
   const minutes = Math.floor(timeLeft / 60);
   const seconds = timeLeft % 60;

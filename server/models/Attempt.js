@@ -91,3 +91,4 @@ const attemptSchema = new mongoose.Schema(
 
 const Attempt = mongoose.model('Attempt', attemptSchema);
 export default Attempt;
+

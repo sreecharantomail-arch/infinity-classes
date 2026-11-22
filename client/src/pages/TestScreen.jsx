@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import Timer from '../components/Timer';
 import {
-  HelpCircle,
   ChevronLeft,
   ChevronRight,
   Flag,
@@ -15,43 +14,39 @@ import {
   CheckCircle,
 } from 'lucide-react';
 
+const SESSION_STORAGE_KEY = 'online_test_active_session';
+const TEST_DURATION_MS = 10 * 60 * 1000; // 10 minutes
+
 export default function TestScreen() {
   const [questions, setQuestions] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  // selectedAnswers: { [questionId]: optionIndex }
   const [selectedAnswers, setSelectedAnswers] = useState({});
-  // markedForReview: Set of questionIds
   const [markedForReview, setMarkedForReview] = useState(new Set());
+  const [targetEndTime, setTargetEndTime] = useState(null);
+  const [startTime, setStartTime] = useState(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [autoSubmitNotice, setAutoSubmitNotice] = useState(false);
 
-  const startTimeRef = useRef(Date.now());
   const isSubmittingRef = useRef(false);
   const navigate = useNavigate();
 
-  // Load questions
-  useEffect(() => {
-    const loadQuestions = async () => {
-      try {
-        const res = await api.getTestQuestions();
-        if (res.success && res.questions?.length > 0) {
-          setQuestions(res.questions);
-          startTimeRef.current = Date.now();
-        } else {
-          setError('No questions available in the question bank.');
-        }
-      } catch (err) {
-        console.error('Failed to load test questions:', err);
-        setError(err.message || 'Failed to load test questions. Please try again.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadQuestions();
+  // Helper to persist current session to storage
+  const saveSession = useCallback((qList, answers, marked, endMs, startMs) => {
+    try {
+      const payload = {
+        questions: qList,
+        selectedAnswers: answers,
+        markedForReview: Array.from(marked),
+        targetEndTime: endMs,
+        startTime: startMs,
+      };
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(payload));
+    } catch (e) {
+      console.warn('Failed to cache test session in localStorage', e);
+    }
   }, []);
 
   // Submit test handler
@@ -61,8 +56,9 @@ export default function TestScreen() {
       isSubmittingRef.current = true;
       setSubmitting(true);
 
-      const elapsedSeconds = Math.round((Date.now() - startTimeRef.current) / 1000);
-      const timeSpentSeconds = Math.min(elapsedSeconds, 600); // capped at 10 minutes
+      const actualStart = startTime || Date.now();
+      const elapsedSeconds = Math.round((Date.now() - actualStart) / 1000);
+      const timeSpentSeconds = Math.min(Math.max(1, elapsedSeconds), 600); // capped at 10 minutes
 
       // Format answers payload
       const answersPayload = questions.map((q) => ({
@@ -78,6 +74,9 @@ export default function TestScreen() {
           isTimedOut,
         });
 
+        // Clear active session upon successful submission
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+
         if (res.success && res.attemptId) {
           navigate(`/result/${res.attemptId}`, { replace: true });
         } else {
@@ -90,7 +89,7 @@ export default function TestScreen() {
         setSubmitting(false);
       }
     },
-    [questions, selectedAnswers, navigate]
+    [questions, selectedAnswers, startTime, navigate]
   );
 
   // Auto-submit when timer expires
@@ -99,38 +98,118 @@ export default function TestScreen() {
     performSubmit(true);
   }, [performSubmit]);
 
+  // Load or resume test session on mount
+  useEffect(() => {
+    const initializeTest = async () => {
+      try {
+        // 1. Check if an active session already exists in localStorage
+        const saved = localStorage.getItem(SESSION_STORAGE_KEY);
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            const now = Date.now();
+
+            // Check if saved session is still within the 10-minute window
+            if (parsed.targetEndTime && parsed.questions?.length > 0) {
+              if (parsed.targetEndTime <= now) {
+                // Session expired while user was away! Auto-submit directly
+                setQuestions(parsed.questions);
+                setSelectedAnswers(parsed.selectedAnswers || {});
+                setStartTime(parsed.startTime || now - TEST_DURATION_MS);
+                setAutoSubmitNotice(true);
+                setLoading(false);
+                // Perform submission with cached answers
+                isSubmittingRef.current = true;
+                const expiredAnswers = parsed.questions.map((q) => ({
+                  questionId: q._id,
+                  selectedOptionIndex:
+                    parsed.selectedAnswers && parsed.selectedAnswers[q._id] !== undefined
+                      ? parsed.selectedAnswers[q._id]
+                      : null,
+                }));
+                const res = await api.submitTest({
+                  answers: expiredAnswers,
+                  timeSpentSeconds: 600,
+                  isTimedOut: true,
+                });
+                localStorage.removeItem(SESSION_STORAGE_KEY);
+                if (res.success && res.attemptId) {
+                  navigate(`/result/${res.attemptId}`, { replace: true });
+                }
+                return;
+              } else {
+                // Resume ongoing test session with persistent countdown & selections
+                setQuestions(parsed.questions);
+                setSelectedAnswers(parsed.selectedAnswers || {});
+                setMarkedForReview(new Set(parsed.markedForReview || []));
+                setTargetEndTime(parsed.targetEndTime);
+                setStartTime(parsed.startTime || now);
+                setLoading(false);
+                return;
+              }
+            }
+          } catch (e) {
+            console.warn('Corrupted saved session, re-initializing...', e);
+            localStorage.removeItem(SESSION_STORAGE_KEY);
+          }
+        }
+
+        // 2. Otherwise start a fresh test session
+        const res = await api.getTestQuestions();
+        if (res.success && res.questions?.length > 0) {
+          const now = Date.now();
+          const calculatedEnd = now + TEST_DURATION_MS;
+
+          setQuestions(res.questions);
+          setStartTime(now);
+          setTargetEndTime(calculatedEnd);
+          saveSession(res.questions, {}, new Set(), calculatedEnd, now);
+        } else {
+          setError('No questions available in the question bank.');
+        }
+      } catch (err) {
+        console.error('Failed to initialize test:', err);
+        setError(err.message || 'Failed to load test questions. Please try again.');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initializeTest();
+  }, [saveSession, navigate]);
+
   const currentQuestion = questions[currentIndex];
   const isAnswered = currentQuestion && selectedAnswers[currentQuestion._id] !== undefined;
   const isMarked = currentQuestion && markedForReview.has(currentQuestion._id);
 
   const handleSelectOption = (optionIndex) => {
     if (!currentQuestion) return;
-    setSelectedAnswers((prev) => ({
-      ...prev,
+    const updatedAnswers = {
+      ...selectedAnswers,
       [currentQuestion._id]: optionIndex,
-    }));
+    };
+    setSelectedAnswers(updatedAnswers);
+    saveSession(questions, updatedAnswers, markedForReview, targetEndTime, startTime);
   };
 
   const handleClearResponse = () => {
     if (!currentQuestion) return;
-    setSelectedAnswers((prev) => {
-      const updated = { ...prev };
-      delete updated[currentQuestion._id];
-      return updated;
-    });
+    const updatedAnswers = { ...selectedAnswers };
+    delete updatedAnswers[currentQuestion._id];
+    setSelectedAnswers(updatedAnswers);
+    saveSession(questions, updatedAnswers, markedForReview, targetEndTime, startTime);
   };
 
   const toggleMarkForReview = () => {
     if (!currentQuestion) return;
-    setMarkedForReview((prev) => {
-      const next = new Set(prev);
-      if (next.has(currentQuestion._id)) {
-        next.delete(currentQuestion._id);
-      } else {
-        next.add(currentQuestion._id);
-      }
-      return next;
-    });
+    const nextMarked = new Set(markedForReview);
+    if (nextMarked.has(currentQuestion._id)) {
+      nextMarked.delete(currentQuestion._id);
+    } else {
+      nextMarked.add(currentQuestion._id);
+    }
+    setMarkedForReview(nextMarked);
+    saveSession(questions, selectedAnswers, nextMarked, targetEndTime, startTime);
   };
 
   const answeredCount = Object.keys(selectedAnswers).length;
@@ -185,12 +264,14 @@ export default function TestScreen() {
           </div>
 
           <div className="flex items-center gap-4">
-            {/* 10-Minute Countdown Timer */}
-            <Timer
-              durationSeconds={600}
-              onTimeUp={handleTimeUp}
-              isSubmitted={submitting}
-            />
+            {/* 10-Minute Countdown Timer using epoch end timestamp */}
+            {targetEndTime && (
+              <Timer
+                targetEndTime={targetEndTime}
+                onTimeUp={handleTimeUp}
+                isSubmitted={submitting}
+              />
+            )}
 
             <button
               onClick={() => setShowConfirmModal(true)}

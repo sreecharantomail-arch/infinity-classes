@@ -195,3 +195,4 @@ export const defaultQuestions = [
     explanation: 'In JavaScript specification, NaN (Not a Number) is a numeric data type representing an unrepresentable value, so typeof NaN is "number".'
   }
 ];
+
